@@ -58,12 +58,19 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
         .await
         .context("parse cli-auth/start response")?;
 
-    output::progress("🔑", "auth", "Opening browser to authorize this device");
+    // The verification page deliberately doesn't accept a query-string
+    // code anymore — the user must type / paste the code from this
+    // terminal into the page. This blocks the OAuth device-flow
+    // phishing pattern (attacker sends victim a pre-filled link).
+    output::progress("🔑", "auth", "Opening the authorization page in your browser");
     output::detail(format!(
-        "If your browser doesn't open, visit: {}",
+        "If your browser doesn't open, visit:  {}",
         start.verify_url
     ));
-    output::detail(format!("Confirm the code: {}", start.user_code));
+    output::detail("");
+    output::detail(format!("    YOUR CODE:  {}", start.user_code));
+    output::detail("");
+    output::detail("Type or paste this code into the page, then click Authorize.");
 
     if let Err(e) = open::that_detached(&start.verify_url) {
         output::detail(format!(
