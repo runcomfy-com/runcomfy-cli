@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
-use crate::api::{http, require_token, DEFAULT_WEB_BASE};
+use crate::api::{http, require_token, web_base};
 use crate::error::CliError;
 
 #[derive(Debug, Deserialize)]
@@ -25,7 +25,7 @@ pub async fn run() -> Result<()> {
         }
     })?;
 
-    let url = format!("{}/api/auth/me", DEFAULT_WEB_BASE.trim_end_matches('/'));
+    let url = format!("{}/api/auth/me", web_base().trim_end_matches('/'));
     let client = http()?;
 
     let resp = client

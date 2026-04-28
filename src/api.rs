@@ -1,7 +1,8 @@
 //! Thin HTTP wrappers for the RunComfy public APIs.
 //!
 //! Endpoint layout (from docs.runcomfy.com):
-//! - `https://api.runcomfy.net/prod/v2`         — Model API + Serverless
+//! - `https://model-api.runcomfy.net/v1`        — Model API (catalog inference)
+//! - `https://api.runcomfy.net/prod/v2`         — Serverless API (deployments)
 //! - `https://trainer-api.runcomfy.net/prod/v1` — Trainer
 //! - `https://www.runcomfy.com/api/cli-auth`    — Device-code OAuth (web)
 
@@ -13,9 +14,24 @@ use serde_json::Value;
 use crate::config;
 use crate::error::CliError;
 
-pub const DEFAULT_API_BASE: &str = "https://api.runcomfy.net/prod/v2";
+pub const DEFAULT_MODEL_API_BASE: &str = "https://model-api.runcomfy.net/v1";
+pub const DEFAULT_SERVERLESS_API_BASE: &str = "https://api.runcomfy.net/prod/v2";
 pub const DEFAULT_TRAINER_BASE: &str = "https://trainer-api.runcomfy.net/prod/v1";
 pub const DEFAULT_WEB_BASE: &str = "https://www.runcomfy.com";
+
+/// Resolve the Model API base URL: `RUNCOMFY_MODEL_API_BASE` env var if set,
+/// else the production default. Used by `run` / `status` / `cancel`.
+pub fn model_api_base() -> String {
+    std::env::var("RUNCOMFY_MODEL_API_BASE")
+        .unwrap_or_else(|_| DEFAULT_MODEL_API_BASE.to_string())
+}
+
+/// Resolve the web base URL: `RUNCOMFY_WEB_BASE` env var if set, else
+/// the production default. Used by commands that don't take an explicit
+/// `--web-base` flag (e.g. `whoami`).
+pub fn web_base() -> String {
+    std::env::var("RUNCOMFY_WEB_BASE").unwrap_or_else(|_| DEFAULT_WEB_BASE.to_string())
+}
 
 /// Build a reqwest client with sensible defaults (timeouts, user-agent).
 pub fn http() -> Result<Client> {

@@ -4,7 +4,12 @@ use clap::{Parser, Subcommand};
 use crate::cmd;
 
 #[derive(Parser, Debug)]
-#[command(name = "runcomfy", version, about = "RunComfy CLI — run AI media models, deploy ComfyUI workflows, train LoRAs", long_about = None)]
+#[command(
+    name = "runcomfy",
+    version,
+    about = "RunComfy CLI — run AI media models on RunComfy",
+    long_about = None
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -25,16 +30,17 @@ pub enum Command {
     /// Show the currently authenticated user
     Whoami,
 
-    /// Run a model or auto-deployed workflow
+    /// Run a Model API model on RunComfy
     ///
-    /// `target` may be either a `model_id` (Model API, e.g.
-    /// `blackforestlabs/flux-2-klein/9b/text-to-image`) or a registered
-    /// official skill name (e.g. `face-swap`, auto-deploys on first use).
+    /// `model_id` is a slash-separated identifier from the RunComfy
+    /// Models catalog, e.g. `blackforestlabs/flux-1-kontext/pro/edit`.
+    /// The CLI submits the request, polls until terminal, and prints
+    /// the result URLs.
     Run {
-        /// model_id or skill name
-        target: String,
+        /// model_id (e.g. blackforestlabs/flux-1-kontext/pro/edit)
+        model_id: String,
 
-        /// JSON payload for the model/workflow inputs
+        /// JSON payload matching the model's Input schema
         #[arg(long, value_name = "JSON")]
         input: Option<String>,
 
@@ -42,77 +48,25 @@ pub enum Command {
         #[arg(long, value_name = "PATH", conflicts_with = "input")]
         input_file: Option<String>,
 
-        /// Wait for completion and print the result (default: true)
-        #[arg(long, default_value_t = true)]
-        wait: bool,
+        /// Submit and return immediately without waiting for completion
+        #[arg(long)]
+        no_wait: bool,
 
-        /// Polling interval seconds while waiting
+        /// Polling interval seconds while waiting (default 2)
         #[arg(long, default_value_t = 2)]
         poll_secs: u64,
     },
 
-    /// Manage Serverless deployments (workflow endpoints)
-    #[command(subcommand)]
-    Deploy(DeployCommand),
-
-    /// Poll the status of a request
+    /// Poll the status of a Model API request
     Status {
         /// request_id returned by `runcomfy run`
         request_id: String,
-
-        /// deployment_id (required if not run via a registered skill)
-        #[arg(long)]
-        deployment_id: Option<String>,
     },
 
-    /// Inspect or manage the request queue
-    #[command(subcommand)]
-    Queue(QueueCommand),
-
-    /// Train a LoRA via the Trainer API
-    Train {
-        /// base model: flux-2-klein | wan-2-2 | ltx-2-3 | qwen-image | qwen-image-edit | z-image | flux-2-dev
-        #[arg(long)]
-        base: String,
-
-        /// Path to a local dataset directory (image + caption pairs)
-        #[arg(long)]
-        dataset: String,
-
-        /// Use case template: character | style | likeness | relight | line-art
-        #[arg(long, default_value = "character")]
-        use_case: String,
-
-        /// GPU type: H100 | H200
-        #[arg(long, default_value = "H100")]
-        gpu: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum DeployCommand {
-    /// Auto-deploy an official workflow under your account
-    Create {
-        /// Skill name (e.g. `face-swap`, `lipsync`); maps to a RunComfy official workflow
-        skill: String,
-    },
-    /// List your existing deployments
-    List,
-    /// Delete a deployment
-    Delete {
-        deployment_id: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum QueueCommand {
-    /// List queued/running requests
-    List,
-    /// Cancel a request
+    /// Cancel a queued Model API request
     Cancel {
+        /// request_id returned by `runcomfy run`
         request_id: String,
-        #[arg(long)]
-        deployment_id: Option<String>,
     },
 }
 
@@ -122,23 +76,13 @@ pub async fn dispatch(args: Cli) -> Result<()> {
         Command::Logout => cmd::login::logout().await,
         Command::Whoami => cmd::whoami::run().await,
         Command::Run {
-            target,
+            model_id,
             input,
             input_file,
-            wait,
+            no_wait,
             poll_secs,
-        } => cmd::run::run(target, input, input_file, wait, poll_secs).await,
-        Command::Deploy(sub) => cmd::deploy::dispatch(sub).await,
-        Command::Status {
-            request_id,
-            deployment_id,
-        } => cmd::status::run(request_id, deployment_id).await,
-        Command::Queue(sub) => cmd::queue::dispatch(sub).await,
-        Command::Train {
-            base,
-            dataset,
-            use_case,
-            gpu,
-        } => cmd::train::run(base, dataset, use_case, gpu).await,
+        } => cmd::run::run(model_id, input, input_file, !no_wait, poll_secs).await,
+        Command::Status { request_id } => cmd::status::run(request_id).await,
+        Command::Cancel { request_id } => cmd::cancel::run(request_id).await,
     }
 }
