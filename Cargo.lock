@@ -966,6 +966,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
+ "futures-util",
  "indicatif",
  "open",
  "reqwest",

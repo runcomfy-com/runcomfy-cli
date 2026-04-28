@@ -77,14 +77,21 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
     let interval = Duration::from_secs(start.poll_interval.max(1));
     let deadline = Instant::now() + Duration::from_secs(start.expires_in);
 
-    output::progress("⏳", "wait", "Waiting for authorization...");
+    output::progress("⏳", "wait", "Waiting for authorization (Ctrl-C to abort)...");
+
+    let mut sigint = sigint_stream();
 
     loop {
         if Instant::now() >= deadline {
             return Err(anyhow!(CliError::AuthTimeout(start.expires_in)));
         }
 
-        tokio::time::sleep(interval).await;
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = sigint.recv() => {
+                return Err(anyhow!("login aborted by user"));
+            }
+        }
 
         let resp = client
             .post(&poll_url)
@@ -117,7 +124,7 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
                 output::progress("✅", "ok", "Authorized; token saved");
                 return Ok(());
             }
-            "denied" => return Err(anyhow!("authorization was denied")),
+            "denied" => return Err(anyhow!(CliError::AuthDenied)),
             "expired" => {
                 return Err(anyhow!(CliError::AuthTimeout(start.expires_in)));
             }
@@ -130,4 +137,38 @@ pub async fn logout() -> Result<()> {
     config::clear_token()?;
     output::progress("✅", "ok", "Logged out");
     Ok(())
+}
+
+/// Cross-platform SIGINT receiver. Same shape as `cmd::run::sigint_stream`
+/// (kept duplicated for now; consider extracting if a third caller appears).
+fn sigint_stream() -> tokio::sync::mpsc::UnboundedReceiver<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sig = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        while sig.recv().await.is_some() {
+            if tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+
+    #[cfg(not(unix))]
+    tokio::spawn(async move {
+        loop {
+            if tokio::signal::ctrl_c().await.is_err() {
+                break;
+            }
+            if tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+
+    rx
 }

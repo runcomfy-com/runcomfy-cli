@@ -65,7 +65,7 @@ pub fn save_token(token: &Token) -> Result<()> {
     ensure_dir()?;
     let path = token_path()?;
     let json = serde_json::to_string_pretty(token)?;
-    write_secure(&path, &json)?;
+    write_secure_atomic(&path, &json)?;
     Ok(())
 }
 
@@ -123,22 +123,43 @@ pub fn clear_token() -> Result<()> {
     Ok(())
 }
 
+/// Atomic, mode-0600 token write.
+///
+/// Writes to a sibling `<path>.tmp` first, fsyncs, then renames into place.
+/// `rename(2)` is atomic on the same filesystem on Unix, so a crash mid-
+/// write can never leave a half-truncated `token.json` for the next launch
+/// to choke on. Permissions are also re-applied with `set_permissions` so
+/// they tighten even if the destination existed with looser perms (the
+/// `.mode()` builder only sets perms on **new** files).
 #[cfg(unix)]
-fn write_secure(path: &PathBuf, contents: &str) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
+fn write_secure_atomic(path: &PathBuf, contents: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let tmp = path.with_extension("json.tmp");
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
-    use std::io::Write;
-    f.write_all(contents.as_bytes())?;
+        .open(&tmp)
+        .with_context(|| format!("open {}", tmp.display()))?;
+    f.write_all(contents.as_bytes())
+        .with_context(|| format!("write {}", tmp.display()))?;
+    f.sync_all().ok();
+    drop(f);
+    // Tighten perms even if a stale tmp predated us.
+    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn write_secure(path: &PathBuf, contents: &str) -> Result<()> {
-    std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))
+fn write_secure_atomic(path: &PathBuf, contents: &str) -> Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
 }

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
-use crate::api::{http, model_api_base, require_token};
+use crate::api::{http, model_api_base, require_token, truncate_error_body};
 use crate::error::CliError;
 use crate::output;
 
@@ -31,7 +31,7 @@ pub async fn run(request_id: String) -> Result<()> {
 
     let code = resp.status();
     if code.as_u16() == 401 {
-        return Err(anyhow!(CliError::AuthExpired));
+        return Err(anyhow!(CliError::TokenRejected));
     }
     if !code.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -40,7 +40,7 @@ pub async fn run(request_id: String) -> Result<()> {
             message: if body.is_empty() {
                 code.canonical_reason().unwrap_or("unknown").to_string()
             } else {
-                body
+                truncate_error_body(&body)
             },
         }));
     }
