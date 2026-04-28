@@ -27,7 +27,9 @@ pub const EX_NOPERM: i32 = 77;
 pub fn classify(e: &anyhow::Error) -> i32 {
     if let Some(c) = e.downcast_ref::<CliError>() {
         return match c {
-            CliError::NotAuthenticated | CliError::AuthExpired => EX_NOPERM,
+            CliError::NotAuthenticated | CliError::TokenRejected | CliError::AuthDenied => {
+                EX_NOPERM
+            }
             CliError::AuthTimeout(_) => EX_TEMPFAIL,
             CliError::Api { status, .. } => {
                 let s = *status;

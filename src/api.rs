@@ -99,17 +99,32 @@ async fn handle_response<T: DeserializeOwned>(resp: reqwest::Response) -> Result
     }
 
     if status.as_u16() == 401 {
-        return Err(CliError::AuthExpired.into());
+        return Err(CliError::TokenRejected.into());
     }
 
     let body = resp.text().await.unwrap_or_default();
     let message = if body.is_empty() {
         status.canonical_reason().unwrap_or("unknown").to_string()
     } else {
-        body
+        truncate_error_body(&body)
     };
     Err(anyhow!(CliError::Api {
         status: status.as_u16(),
         message,
     }))
+}
+
+/// Cap an error response body so a multi-KB HTML 404 from a CDN doesn't
+/// flood the user's terminal. Shared with `cmd::run`; kept here so it can
+/// be reused by other call sites.
+pub fn truncate_error_body(s: &str) -> String {
+    const MAX: usize = 200;
+    let trimmed = s.trim();
+    if trimmed.chars().count() <= MAX {
+        trimmed.to_string()
+    } else {
+        let mut t = trimmed.chars().take(MAX).collect::<String>();
+        t.push_str(" … (body truncated)");
+        t
+    }
 }
