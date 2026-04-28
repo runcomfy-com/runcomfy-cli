@@ -67,10 +67,22 @@ EXAMPLES:
     --input '{\"prompt\":\"...\"}' --output-dir ./out
 ";
 
+/// `runcomfy --version` output, including the git sha and commit date
+/// captured by `build.rs`. Falls back to `unknown` outside a git
+/// checkout (cargo install, docker build, etc.).
+const VERSION_FULL: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("RUNCOMFY_GIT_SHA"),
+    ", ",
+    env!("RUNCOMFY_BUILD_DATE"),
+    ")"
+);
+
 #[derive(Parser, Debug)]
 #[command(
     name = "runcomfy",
-    version,
+    version = VERSION_FULL,
     about = "RunComfy CLI — run AI media models on RunComfy",
     after_help = ROOT_AFTER_HELP,
     long_about = None,
