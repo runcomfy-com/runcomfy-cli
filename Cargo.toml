@@ -2,9 +2,9 @@
 name = "runcomfy"
 version = "0.1.0"
 edition = "2021"
-description = "RunComfy CLI — run AI media models, deploy ComfyUI workflows, train LoRAs"
+description = "RunComfy CLI — run AI media models on RunComfy"
 license = "MIT"
-repository = "https://github.com/InceptionsAI/runcomfy-website"
+repository = "https://github.com/InceptionsAI/runcomfy-cli"
 rust-version = "1.75"
 
 [[bin]]
@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
 dirs = "5"
 indicatif = "0.17"
 open = "5"

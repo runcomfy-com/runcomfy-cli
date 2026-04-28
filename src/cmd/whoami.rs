@@ -3,27 +3,22 @@ use serde::Deserialize;
 
 use crate::api::{http, require_token, web_base};
 use crate::error::CliError;
+use crate::output;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct MeResponse {
     id: String,
     email: Option<String>,
+    display_name: Option<String>,
+    username: Option<String>,
     token_type: Option<String>,
-    #[allow(dead_code)]
     token_created_at: Option<String>,
 }
 
 /// `runcomfy whoami` — call GET {web_base}/api/auth/me with the saved bearer
 /// token and print the authenticated user.
 pub async fn run() -> Result<()> {
-    let token = require_token().map_err(|e| {
-        // Surface a friendly hint instead of the raw not-authenticated error.
-        if let Some(CliError::NotAuthenticated) = e.downcast_ref::<CliError>() {
-            anyhow!("not signed in. Run `runcomfy login` first.")
-        } else {
-            e
-        }
-    })?;
+    let token = require_token()?;
 
     let url = format!("{}/api/auth/me", web_base().trim_end_matches('/'));
     let client = http()?;
@@ -37,24 +32,36 @@ pub async fn run() -> Result<()> {
 
     let status = resp.status();
     if status.as_u16() == 401 {
-        return Err(anyhow!(
-            "token rejected — run `runcomfy login` to refresh"
-        ));
+        return Err(anyhow!(CliError::AuthExpired));
     }
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("HTTP {}: {}", status, body));
+        return Err(anyhow!(CliError::Api {
+            status: status.as_u16(),
+            message: if body.is_empty() {
+                status.canonical_reason().unwrap_or("unknown").to_string()
+            } else {
+                body
+            },
+        }));
     }
 
     let me: MeResponse = resp.json().await.context("parse /api/auth/me response")?;
 
-    println!(
-        "📛 {}",
-        me.email.as_deref().unwrap_or(&me.id)
-    );
-    if let Some(t) = me.token_type.as_deref() {
-        println!("   token type: {}", t);
+    if output::is_json() {
+        output::payload(&serde_json::to_value(&me)?)?;
+    } else {
+        let label = me
+            .email
+            .as_deref()
+            .or(me.display_name.as_deref())
+            .or(me.username.as_deref())
+            .unwrap_or(&me.id);
+        output::progress("📛", "user", label);
+        if let Some(t) = me.token_type.as_deref() {
+            output::detail(format!("token type: {}", t));
+        }
+        output::detail(format!("user id: {}", me.id));
     }
-    println!("   user id: {}", me.id);
     Ok(())
 }

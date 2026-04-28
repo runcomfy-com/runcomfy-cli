@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{http, DEFAULT_WEB_BASE};
 use crate::config::{self, Token};
+use crate::error::CliError;
+use crate::output;
 
 /// Response from POST /api/cli-auth/start
 #[derive(Debug, Deserialize)]
@@ -38,7 +40,7 @@ struct PollRequest<'a> {
 ///   1. POST {web_base}/api/cli-auth/start     → device_code, user_code, verify_url
 ///   2. open(verify_url) in the user's browser
 ///   3. poll {web_base}/api/cli-auth/poll every `poll_interval` seconds
-///   4. on `authorized`, persist the access_token to ~/.config/runcomfy/token.json
+///   4. on `authorized`, persist the access_token via config::save_token
 pub async fn run(web_base: Option<String>) -> Result<()> {
     let base = web_base.unwrap_or_else(|| DEFAULT_WEB_BASE.to_string());
     let client = http()?;
@@ -56,17 +58,18 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
         .await
         .context("parse cli-auth/start response")?;
 
-    println!(
-        "🔑 Opening browser to authorize this device...\n\
-         If your browser doesn't open, visit:\n\
-         {}\n\
-         And confirm the code:\n\
-         {}\n",
-        start.verify_url, start.user_code
-    );
+    output::progress("🔑", "auth", "Opening browser to authorize this device");
+    output::detail(format!(
+        "If your browser doesn't open, visit: {}",
+        start.verify_url
+    ));
+    output::detail(format!("Confirm the code: {}", start.user_code));
 
     if let Err(e) = open::that_detached(&start.verify_url) {
-        eprintln!("(could not auto-open browser: {}; open the URL manually)", e);
+        output::detail(format!(
+            "(could not auto-open browser: {}; open the URL manually)",
+            e
+        ));
     }
 
     // Step 2 & 3: poll until authorized / denied / expired / timeout.
@@ -74,14 +77,11 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
     let interval = Duration::from_secs(start.poll_interval.max(1));
     let deadline = Instant::now() + Duration::from_secs(start.expires_in);
 
-    println!("⏳ Waiting for authorization...");
+    output::progress("⏳", "wait", "Waiting for authorization...");
 
     loop {
         if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "authorization timed out after {}s — run `runcomfy login` again",
-                start.expires_in
-            ));
+            return Err(anyhow!(CliError::AuthTimeout(start.expires_in)));
         }
 
         tokio::time::sleep(interval).await;
@@ -95,7 +95,6 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
             .await
             .with_context(|| format!("POST {}", poll_url))?;
 
-        let status_code = resp.status();
         // 410 Gone is used for denied/expired with a JSON body; parse first.
         let body: PollResponse = resp
             .json()
@@ -105,41 +104,30 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
         match body.status.as_str() {
             "pending" => continue,
             "authorized" => {
-                let access_token = body
-                    .access_token
-                    .ok_or_else(|| anyhow!("server returned authorized status without access_token"))?;
-
+                let access_token = body.access_token.ok_or_else(|| {
+                    anyhow!("server returned authorized status without access_token")
+                })?;
                 let token = Token {
                     access_token,
                     refresh_token: None,
                     expires_at: None,
                     user_email: None,
                 };
-                config::save_token(&token).context("save token to ~/.config/runcomfy/")?;
-                println!("✅ Authorized. Token saved to ~/.config/runcomfy/token.json");
+                config::save_token(&token).context("save token")?;
+                output::progress("✅", "ok", "Authorized; token saved");
                 return Ok(());
             }
-            "denied" => {
-                return Err(anyhow!("authorization was denied"));
-            }
+            "denied" => return Err(anyhow!("authorization was denied")),
             "expired" => {
-                return Err(anyhow!(
-                    "session expired — run `runcomfy login` again"
-                ));
+                return Err(anyhow!(CliError::AuthTimeout(start.expires_in)));
             }
-            other => {
-                return Err(anyhow!(
-                    "unexpected poll status `{}` (HTTP {})",
-                    other,
-                    status_code
-                ));
-            }
+            other => return Err(anyhow!("unexpected poll status `{}`", other)),
         }
     }
 }
 
 pub async fn logout() -> Result<()> {
     config::clear_token()?;
-    println!("Logged out.");
+    output::progress("✅", "ok", "Logged out");
     Ok(())
 }
