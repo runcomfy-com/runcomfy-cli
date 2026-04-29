@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to (re)build, e.g. v0.1.0. Empty = HEAD; will not create a GitHub Release."
+        description: "Tag to (re)build and re-release, e.g. v0.1.0. Leave empty to build HEAD only (no Release / npm publish)."
         required: false
         default: ""
 
@@ -75,7 +75,10 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Run on tag push, OR a manual dispatch where the user supplied a v* tag.
+    # github.ref on a manual dispatch is the source branch (typically main),
+    # NOT inputs.tag — so we can't gate on github.ref alone (codex P2).
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.tag, 'v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -92,13 +95,17 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # On dispatch from a branch, github.ref_name is the branch (not a
+          # tag); use inputs.tag if provided so the release lands on the
+          # right tag.
+          tag_name: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
 
   publish-npm:
     needs: release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.tag, 'v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,8 +117,17 @@ jobs:
 
       - name: derive version from tag
         id: version
+        env:
+          # On push: github.ref_name is the tag (v0.1.0). On dispatch: the
+          # source branch — fall back to inputs.tag in that case.
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
