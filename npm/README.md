@@ -12,7 +12,7 @@ npx -y @runcomfy/cli login
 npm i -g @runcomfy/cli
 ```
 
-A native binary (Rust) is downloaded from [GitHub Releases](https://github.com/InceptionsAI/runcomfy-cli/releases) during `postinstall` and verified via SHA-256.
+A native binary (Rust) is downloaded from [GitHub Releases](https://github.com/runcomfy-com/runcomfy-cli/releases) during `postinstall` and verified via SHA-256.
 
 To skip the download (when vendoring or using a pre-installed binary), set `RUNCOMFY_SKIP_POSTINSTALL=1` before installing.
 

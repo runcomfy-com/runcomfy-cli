@@ -2,7 +2,7 @@
 # RunComfy CLI installer.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/InceptionsAI/runcomfy-cli/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/runcomfy-com/runcomfy-cli/main/install.sh | sh
 #
 # Environment:
 #   RUNCOMFY_VERSION   Pin a specific version, e.g. v0.1.0 (default: latest)
@@ -10,7 +10,7 @@
 
 set -eu
 
-REPO="InceptionsAI/runcomfy-cli"
+REPO="runcomfy-com/runcomfy-cli"
 
 err() { printf 'install: %s\n' "$1" >&2; exit 1; }
 log() { printf 'install: %s\n' "$1"; }

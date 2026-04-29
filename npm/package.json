@@ -1,15 +1,15 @@
 {
   "name": "@runcomfy/cli",
-  "version": "0.1.0",
-  "description": "RunComfy CLI — run AI media models on RunComfy",
+  "version": "0.1.1",
+  "description": "RunComfy CLI \u2014 run AI media models on RunComfy",
   "license": "MIT",
   "homepage": "https://docs.runcomfy.com/cli/introduction",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/InceptionsAI/runcomfy-cli.git"
+    "url": "git+https://github.com/runcomfy-com/runcomfy-cli.git"
   },
   "bugs": {
-    "url": "https://github.com/InceptionsAI/runcomfy-cli/issues"
+    "url": "https://github.com/runcomfy-com/runcomfy-cli/issues"
   },
   "keywords": [
     "runcomfy",

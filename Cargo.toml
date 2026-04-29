@@ -1,10 +1,10 @@
 [package]
 name = "runcomfy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "RunComfy CLI — run AI media models on RunComfy"
 license = "MIT"
-repository = "https://github.com/InceptionsAI/runcomfy-cli"
+repository = "https://github.com/runcomfy-com/runcomfy-cli"
 rust-version = "1.75"
 
 [[bin]]

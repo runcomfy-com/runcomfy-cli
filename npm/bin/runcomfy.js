@@ -14,7 +14,7 @@ if (!fs.existsSync(binPath)) {
     `runcomfy: native binary not found at ${binPath}\n` +
     `The postinstall step may have failed. Try:\n` +
     `  npm rebuild @runcomfy/cli\n` +
-    `Or download manually from https://github.com/InceptionsAI/runcomfy-cli/releases\n`
+    `Or download manually from https://github.com/runcomfy-com/runcomfy-cli/releases\n`
   );
   process.exit(1);
 }

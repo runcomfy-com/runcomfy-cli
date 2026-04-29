@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const { execSync } = require('node:child_process');
 
-const REPO = 'InceptionsAI/runcomfy-cli';
+const REPO = 'runcomfy-com/runcomfy-cli';
 
 const TARGETS = {
   'darwin-arm64': 'aarch64-apple-darwin',
@@ -168,7 +168,7 @@ async function main() {
 main().catch((err) => {
   process.stderr.write(
     `runcomfy: postinstall failed: ${err.message}\n` +
-    `You can install manually from https://github.com/InceptionsAI/runcomfy-cli/releases\n` +
+    `You can install manually from https://github.com/runcomfy-com/runcomfy-cli/releases\n` +
     `Or skip this step with RUNCOMFY_SKIP_POSTINSTALL=1\n`
   );
   process.exit(1);
