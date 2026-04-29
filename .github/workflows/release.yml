@@ -28,7 +28,17 @@ jobs:
           # macos-13 at all.
           - { runner: macos-14,      target: aarch64-apple-darwin,       cross: false }
           - { runner: macos-14,      target: x86_64-apple-darwin,        cross: false }
-          - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu,   cross: false }
+          # Pin Linux x86_64 to Ubuntu 22.04 (glibc 2.35) instead of
+          # ubuntu-latest (now Ubuntu 24.04 / glibc 2.39). glibc is
+          # forward-compatible but not backward-compatible — building on
+          # the oldest LTS we want to support means one tarball runs
+          # everywhere. Without this pin, v0.1.1 fails on Ubuntu 22.04
+          # (and our worker base images) with:
+          #   /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39' not found
+          # aarch64 stays on ubuntu-latest because `cross: true` runs the
+          # build inside the cross Docker image (CentOS-derived, glibc
+          # 2.17), so the host runner's glibc doesn't matter there.
+          - { runner: ubuntu-22.04,  target: x86_64-unknown-linux-gnu,   cross: false }
           - { runner: ubuntu-latest, target: aarch64-unknown-linux-gnu,  cross: true  }
     steps:
       - uses: actions/checkout@v4
