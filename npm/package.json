@@ -1,0 +1,44 @@
+{
+  "name": "@runcomfy/cli",
+  "version": "0.1.0",
+  "description": "RunComfy CLI — run AI media models on RunComfy",
+  "license": "MIT",
+  "homepage": "https://docs.runcomfy.com/cli/introduction",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/InceptionsAI/runcomfy-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/InceptionsAI/runcomfy-cli/issues"
+  },
+  "keywords": [
+    "runcomfy",
+    "comfyui",
+    "ai",
+    "cli",
+    "image-generation",
+    "video-generation"
+  ],
+  "bin": {
+    "runcomfy": "bin/runcomfy.js"
+  },
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  },
+  "files": [
+    "bin/runcomfy.js",
+    "postinstall.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

@@ -1,0 +1,155 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build and re-release, e.g. v0.1.0. Leave empty to build HEAD only (no Release / npm publish)."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14,      target: aarch64-apple-darwin,       cross: false }
+          - { runner: macos-13,      target: x86_64-apple-darwin,        cross: false }
+          - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu,   cross: false }
+          - { runner: ubuntu-latest, target: aarch64-unknown-linux-gnu,  cross: true  }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/runcomfy" "dist/runcomfy"
+          cd dist
+          tar -czf "runcomfy-${{ matrix.target }}.tar.gz" runcomfy
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "runcomfy-${{ matrix.target }}.tar.gz" > "runcomfy-${{ matrix.target }}.tar.gz.sha256"
+          else
+            sha256sum "runcomfy-${{ matrix.target }}.tar.gz" > "runcomfy-${{ matrix.target }}.tar.gz.sha256"
+          fi
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runcomfy-${{ matrix.target }}
+          path: |
+            dist/runcomfy-${{ matrix.target }}.tar.gz
+            dist/runcomfy-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    # Run on tag push, OR a manual dispatch where the user supplied a v* tag.
+    # github.ref on a manual dispatch is the source branch (typically main),
+    # NOT inputs.tag — so we can't gate on github.ref alone (codex P2).
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.tag, 'v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Same ref the build job used — otherwise on dispatch we'd
+          # be running against the dispatched branch's HEAD and
+          # generate_release_notes would produce notes that don't
+          # match the tag (codex P1).
+          ref: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: collect tarballs
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} dist/ \;
+          ls -la dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # On dispatch from a branch, github.ref_name is the branch (not a
+          # tag); use inputs.tag if provided so the release lands on the
+          # right tag.
+          tag_name: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  publish-npm:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.tag, 'v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Critical: must check out the tag, not the dispatched branch.
+          # `npm publish` ships the files in cwd, so without this we'd
+          # publish branch HEAD under the tag's version number — wrong
+          # code under that version (codex P1).
+          ref: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: derive version from tag
+        id: version
+        env:
+          # On push: github.ref_name is the tag (v0.1.0). On dispatch: the
+          # source branch — fall back to inputs.tag in that case.
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: align package.json version
+        working-directory: npm
+        run: |
+          npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: publish
+        working-directory: npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
