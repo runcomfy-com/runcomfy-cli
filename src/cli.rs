@@ -42,6 +42,9 @@ EXIT CODES:
   69  upstream service error 5xx (EX_UNAVAILABLE)
   75  retryable transient error: timeout / 429 (EX_TEMPFAIL)
   77  authentication error 401 / 403 (EX_NOPERM)
+
+DOCS:
+  https://docs.runcomfy.com/cli/introduction
 ";
 
 const RUN_AFTER_HELP: &str = "\
@@ -65,6 +68,9 @@ EXAMPLES:
   # Save outputs into a specific directory
   runcomfy run openai/gpt-image-2/text-to-image \\
     --input '{\"prompt\":\"...\"}' --output-dir ./out
+
+DOCS:
+  https://docs.runcomfy.com/cli/commands#run
 ";
 
 /// `runcomfy --version` output, including the git sha and commit date
