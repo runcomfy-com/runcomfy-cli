@@ -139,11 +139,36 @@ pub async fn submit(args: SubmitArgs) -> Result<()> {
 /// What a `STOPPED` job actually is. The public API reports `STOPPED`
 /// both for a job that ran to its final step and for one the platform
 /// stopped early (spot preemption, server reclaimed), so completion has to
-/// be inferred from the step progress and from the result's `error`.
+/// be *proven* from the step progress and the result's `error`. Anything
+/// that can't be verified is treated as not finished, so automation never
+/// consumes a partial checkpoint on the strength of a bare `STOPPED`.
 #[derive(Debug, PartialEq, Eq)]
 enum StoppedOutcome {
+    /// Valid progress with `current_step >= total_steps` and no error.
     Finished,
-    Incomplete(String),
+    /// Progress shows the job stopped before its final step.
+    StoppedEarly { current: i64, total: i64 },
+    /// The result record carries an `error`.
+    ErrorInResult(String),
+    /// No usable progress (`progress` missing / not an object /
+    /// `total_steps` 0), so completion cannot be verified.
+    Unverified,
+}
+
+impl StoppedOutcome {
+    fn describe(&self) -> String {
+        match self {
+            StoppedOutcome::Finished => "finished".to_string(),
+            StoppedOutcome::StoppedEarly { current, total } => format!(
+                "training stopped at step {}/{} before completing (preempted or reclaimed by the platform)",
+                current, total
+            ),
+            StoppedOutcome::ErrorInResult(msg) => format!("the result carries an error: {}", msg),
+            StoppedOutcome::Unverified => {
+                "the API reported no step progress, so completion cannot be verified".to_string()
+            }
+        }
+    }
 }
 
 fn classify_stopped(status: &Value, result: &Value) -> StoppedOutcome {
@@ -153,19 +178,21 @@ fn classify_stopped(status: &Value, result: &Value) -> StoppedOutcome {
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| err.to_string());
-        return StoppedOutcome::Incomplete(format!("the result carries an error: {}", message));
+        return StoppedOutcome::ErrorInResult(message);
     }
-    if let Some(p) = status.get("progress").filter(|p| p.is_object()) {
-        let current = p.get("current_step").and_then(Value::as_i64).unwrap_or(0);
-        let total = p.get("total_steps").and_then(Value::as_i64).unwrap_or(0);
-        if total > 0 && current < total {
-            return StoppedOutcome::Incomplete(format!(
-                "training stopped at step {}/{} before completing (preempted or reclaimed by the platform)",
-                current, total
-            ));
-        }
+    let Some(p) = status.get("progress").filter(|p| p.is_object()) else {
+        return StoppedOutcome::Unverified;
+    };
+    let current = p.get("current_step").and_then(Value::as_i64).unwrap_or(0);
+    let total = p.get("total_steps").and_then(Value::as_i64).unwrap_or(0);
+    if total <= 0 {
+        return StoppedOutcome::Unverified;
     }
-    StoppedOutcome::Finished
+    if current >= total {
+        StoppedOutcome::Finished
+    } else {
+        StoppedOutcome::StoppedEarly { current, total }
+    }
 }
 
 /// Print a finished job's result record. Only a `STOPPED` job that reached
@@ -186,13 +213,26 @@ fn finish_training(status: &Value, result: &Value, job_id: &str) -> Result<()> {
                 );
                 output::payload(result)
             }
-            StoppedOutcome::Incomplete(why) => {
+            outcome @ StoppedOutcome::StoppedEarly { .. } => {
                 output::payload(result)?;
                 Err(anyhow!(CliError::TrainingIncomplete {
                     job_id: job_id.to_string(),
                     detail: format!(
                         "{}; resume from the latest checkpoint with `runcomfy train resume {}`",
-                        why, job_id
+                        outcome.describe(),
+                        job_id
+                    ),
+                }))
+            }
+            outcome => {
+                output::payload(result)?;
+                Err(anyhow!(CliError::TrainingIncomplete {
+                    job_id: job_id.to_string(),
+                    detail: format!(
+                        "{}; inspect `runcomfy train status {}` and `runcomfy train result {}` before using its artifacts",
+                        outcome.describe(),
+                        job_id,
+                        job_id
                     ),
                 }))
             }
@@ -285,11 +325,17 @@ pub async fn status(job_id: String) -> Result<()> {
         }
     }
     if poll::status_of(&v) == "stopped" {
-        if let StoppedOutcome::Incomplete(why) = classify_stopped(&v, &Value::Null) {
-            pairs.push((
+        match classify_stopped(&v, &Value::Null) {
+            StoppedOutcome::Finished => {}
+            outcome @ StoppedOutcome::StoppedEarly { .. } => pairs.push((
                 "note",
-                format!("{}; `runcomfy train resume {}` to continue", why, job_id),
-            ));
+                format!(
+                    "{}; `runcomfy train resume {}` to continue",
+                    outcome.describe(),
+                    job_id
+                ),
+            )),
+            outcome => pairs.push(("note", outcome.describe())),
         }
     }
     output::kv(&pairs);
@@ -426,42 +472,57 @@ mod tests {
 
     #[test]
     fn stopped_at_final_step_is_finished() {
+        let r = json!({"status": "STOPPED"});
         assert_eq!(
-            classify_stopped(&status(2000, 2000), &json!({"status": "STOPPED"})),
+            classify_stopped(&status(2000, 2000), &r),
+            StoppedOutcome::Finished
+        );
+        assert_eq!(
+            classify_stopped(&status(2001, 2000), &r),
             StoppedOutcome::Finished
         );
     }
 
     #[test]
     fn stopped_early_is_incomplete() {
-        match classify_stopped(&status(320, 2000), &json!({"status": "STOPPED"})) {
-            StoppedOutcome::Incomplete(why) => assert!(why.contains("320/2000"), "{}", why),
-            other => panic!("expected Incomplete, got {:?}", other),
-        }
+        assert_eq!(
+            classify_stopped(&status(320, 2000), &json!({"status": "STOPPED"})),
+            StoppedOutcome::StoppedEarly {
+                current: 320,
+                total: 2000
+            }
+        );
     }
 
     #[test]
     fn result_error_wins_even_at_final_step() {
         let result = json!({"status": "STOPPED", "error": {"message": "Job failed: server was reclaimed.", "code": "TRAINING_ERROR"}});
-        match classify_stopped(&status(2000, 2000), &result) {
-            StoppedOutcome::Incomplete(why) => {
-                assert!(why.contains("server was reclaimed"), "{}", why)
-            }
-            other => panic!("expected Incomplete, got {:?}", other),
-        }
+        assert_eq!(
+            classify_stopped(&status(2000, 2000), &result),
+            StoppedOutcome::ErrorInResult("Job failed: server was reclaimed.".into())
+        );
     }
 
     #[test]
-    fn no_progress_info_is_treated_as_finished() {
-        let st = json!({"status": "STOPPED"});
+    fn missing_or_unusable_progress_is_not_finished() {
         assert_eq!(
-            classify_stopped(&st, &Value::Null),
-            StoppedOutcome::Finished
+            classify_stopped(&json!({"status": "STOPPED"}), &Value::Null),
+            StoppedOutcome::Unverified
         );
-        let zero_total = json!({"status": "STOPPED", "progress": {"current_step": 5, "total_steps": 0, "percent": 0}});
         assert_eq!(
-            classify_stopped(&zero_total, &Value::Null),
-            StoppedOutcome::Finished
+            classify_stopped(
+                &json!({"status": "STOPPED", "progress": "n/a"}),
+                &Value::Null
+            ),
+            StoppedOutcome::Unverified
+        );
+        assert_eq!(
+            classify_stopped(&status(5, 0), &Value::Null),
+            StoppedOutcome::Unverified
+        );
+        assert_eq!(
+            classify_stopped(&json!({"status": "STOPPED", "progress": {}}), &Value::Null),
+            StoppedOutcome::Unverified
         );
     }
 }

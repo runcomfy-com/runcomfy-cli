@@ -74,14 +74,25 @@ pub fn print_cancel_outcome(v: &Value, id: &str) -> Result<()> {
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("(no status)");
-    // Serverless replies with `{"status": "cancellation_requested"}` and no
-    // `outcome`; the Model API replies with `{"outcome": "cancelled", ...}`.
+    // The Model API answers `{"outcome": "cancelled" | "not_cancellable", ...}`.
+    // Serverless answers `{"status": "cancellation_requested"}` with no
+    // `outcome`: the cancel has only been accepted and the request may still
+    // be running, so say exactly that instead of claiming a final state.
     let outcome = match v.get("outcome").and_then(Value::as_str) {
         Some(o) => o,
-        None if status.starts_with("cancel") => "cancelled",
+        None if status == "cancellation_requested" => "cancellation_requested",
+        None if matches!(status, "cancelled" | "canceled") => "cancelled",
         None => "(no outcome)",
     };
     match outcome {
+        "cancellation_requested" => output::progress(
+            "⏳",
+            "requested",
+            format!(
+                "Cancellation requested for {}; it may still be running — poll its status to confirm it reaches canceled",
+                id
+            ),
+        ),
         "cancelled" | "canceled" => output::progress(
             "✅",
             "ok",
