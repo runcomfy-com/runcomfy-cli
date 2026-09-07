@@ -23,7 +23,9 @@ use crate::output;
 pub fn field(v: &Value, key: &str) -> String {
     match v.get(key) {
         None | Some(Value::Null) => "-".to_string(),
+        Some(Value::String(s)) if s.is_empty() => "-".to_string(),
         Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) if a.is_empty() => "-".to_string(),
         Some(Value::Array(a)) => a
             .iter()
             .map(|x| match x {
