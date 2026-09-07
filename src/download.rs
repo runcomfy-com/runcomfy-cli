@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
@@ -115,14 +115,36 @@ pub fn collect_urls(v: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// File name for a downloaded asset: the URL's last path segment, reduced
+/// to a single safe filesystem component. Path separators, control
+/// characters and characters that are illegal on Windows are replaced, and
+/// a name that would be empty, `.` or `..` becomes `output` — so a crafted
+/// result URL can never make `Path::join` write outside `--output-dir`.
 pub fn filename_from_url(url: &str) -> String {
-    let no_query = url.split('?').next().unwrap_or(url);
-    let no_fragment = no_query.split('#').next().unwrap_or(no_query);
-    let last = no_fragment.rsplit('/').next().unwrap_or("");
-    if last.is_empty() {
+    let last_segment = Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.path_segments()
+                .and_then(|mut segs| segs.rfind(|s| !s.is_empty()).map(str::to_string))
+        })
+        .unwrap_or_default();
+    sanitize_filename(&last_segment)
+}
+
+fn sanitize_filename(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
         "output".to_string()
     } else {
-        last.to_string()
+        trimmed.to_string()
     }
 }
 
@@ -162,11 +184,18 @@ fn dedup_path(dir: &Path, name: &str) -> PathBuf {
 /// URLs are pre-signed / public CDN links, and the token must never
 /// leave the RunComfy API hosts.
 pub async fn download_file(client: &Client, url: &str, dir: &Path) -> Result<PathBuf> {
+    // Parse once and hand the parsed URL to reqwest, so the host that was
+    // checked is exactly the host that gets contacted. Re-checked here
+    // because this function is also reachable directly.
+    let parsed = Url::parse(url).with_context(|| format!("parse download URL {}", url))?;
+    if !is_trusted_download_url(url) {
+        return Err(anyhow!("refusing to download from untrusted URL {}", url));
+    }
     let name = filename_from_url(url);
     let path = dedup_path(dir, &name);
 
     let resp = client
-        .get(url)
+        .get(parsed)
         .send()
         .await
         .with_context(|| format!("GET {}", url))?
@@ -225,32 +254,28 @@ pub async fn download_file(client: &Client, url: &str, dir: &Path) -> Result<Pat
     Ok(path)
 }
 
-/// Trusted-host check for download URLs. Parses the authority by hand
-/// (no `url` crate dependency) and matches the host against
-/// [`TRUSTED_DOWNLOAD_HOST_SUFFIXES`].
+/// Trusted-host check for download URLs.
+///
+/// Uses the same WHATWG parser reqwest uses, so the host checked here is
+/// the host that would actually be contacted. A hand-rolled authority
+/// split can be fooled by inputs such as
+/// `https://127.0.0.1\@cdn.runcomfy.net/x`, where the parser treats the
+/// backslash as a path separator and the real host is `127.0.0.1`.
 pub fn is_trusted_download_url(url: &str) -> bool {
-    let without_scheme = match url.split_once("://") {
-        Some((scheme, rest))
-            if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") =>
-        {
-            rest
-        }
-        _ => return false,
+    let parsed = match Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return false,
     };
-    // Everything up to the first '/', '?' or '#' is the authority.
-    let authority_end = without_scheme
-        .find(['/', '?', '#'])
-        .unwrap_or(without_scheme.len());
-    let authority = &without_scheme[..authority_end];
-    // Drop userinfo "user:pass@host".
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    // Drop port ":1234". IPv6 literals stay bracketed and never match a
-    // suffix, so they are never trusted.
-    let host = host.split(':').next().unwrap_or(host);
-    let host_lower = host.to_lowercase();
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
     TRUSTED_DOWNLOAD_HOST_SUFFIXES
         .iter()
-        .any(|suffix| host_lower.ends_with(suffix))
+        .any(|suffix| host.ends_with(suffix))
 }
 
 #[cfg(test)]
@@ -277,6 +302,40 @@ mod tests {
     }
 
     #[test]
+    fn parser_resolves_backslash_authority_to_the_real_host() {
+        // Why a hand-rolled authority split is wrong here: the URL parser
+        // reqwest uses reads this host as 127.0.0.1 (the backslash begins
+        // the path), while a naive rsplit('@') reads "cdn.runcomfy.net".
+        let u = Url::parse("https://127.0.0.1\\@cdn.runcomfy.net/file").unwrap();
+        assert_eq!(u.host_str(), Some("127.0.0.1"));
+        assert!(!is_trusted_download_url(u.as_str()));
+    }
+
+    #[test]
+    fn host_confusion_attempts_are_untrusted() {
+        // Backslash is a path separator to the URL parser: the real host is
+        // 127.0.0.1, even though a naive authority split reads
+        // "cdn.runcomfy.net" after the '@'.
+        assert!(!is_trusted_download_url(
+            "https://127.0.0.1\\@cdn.runcomfy.net/file"
+        ));
+        // Trusted-looking userinfo in front of an untrusted host.
+        assert!(!is_trusted_download_url(
+            "https://cdn.runcomfy.net@evil.example.com/file"
+        ));
+        // Trusted name only in the path, query or fragment.
+        assert!(!is_trusted_download_url(
+            "https://evil.example.com/#@cdn.runcomfy.net"
+        ));
+        assert!(!is_trusted_download_url(
+            "https://evil.example.com/?u=https://cdn.runcomfy.net"
+        ));
+        // IP literals never match a suffix.
+        assert!(!is_trusted_download_url("https://[::1]/x"));
+        assert!(!is_trusted_download_url("http://10.0.0.1/x.runcomfy.net"));
+    }
+
+    #[test]
     fn urls_are_collected_once_in_order() {
         let v = serde_json::json!({
             "images": ["https://a.runcomfy.net/1.png", "https://a.runcomfy.net/1.png"],
@@ -300,5 +359,25 @@ mod tests {
             "b.png"
         );
         assert_eq!(filename_from_url("https://x.runcomfy.net/"), "output");
+    }
+
+    #[test]
+    fn filenames_stay_inside_the_output_dir() {
+        // Windows path separator inside a segment must not escape.
+        assert_eq!(
+            filename_from_url("https://x.runcomfy.net/a/..\\victim"),
+            "victim"
+        );
+        // Traversal segments resolve away or degrade to a safe default.
+        assert_eq!(filename_from_url("https://x.runcomfy.net/a/.."), "output");
+        assert_eq!(
+            filename_from_url("https://x.runcomfy.net/a/%2e%2e/"),
+            "output"
+        );
+        assert_eq!(sanitize_filename("con:fig?.txt"), "con_fig_.txt");
+        assert_eq!(sanitize_filename("a/b"), "a_b");
+        assert_eq!(sanitize_filename("..."), "output");
+        assert_eq!(sanitize_filename(""), "output");
+        assert!(!filename_from_url("https://x.runcomfy.net/a/..\\victim").contains('\\'));
     }
 }
