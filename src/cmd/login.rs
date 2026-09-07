@@ -7,6 +7,7 @@ use crate::api::{http, DEFAULT_WEB_BASE};
 use crate::config::{self, Token};
 use crate::error::CliError;
 use crate::output;
+use crate::signal::sigint_stream;
 
 /// Response from POST /api/cli-auth/start
 #[derive(Debug, Deserialize)]
@@ -62,7 +63,11 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
     // code anymore — the user must type / paste the code from this
     // terminal into the page. This blocks the OAuth device-flow
     // phishing pattern (attacker sends victim a pre-filled link).
-    output::progress("🔑", "auth", "Opening the authorization page in your browser");
+    output::progress(
+        "🔑",
+        "auth",
+        "Opening the authorization page in your browser",
+    );
     output::detail(format!(
         "If your browser doesn't open, visit:  {}",
         start.verify_url
@@ -84,7 +89,11 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
     let interval = Duration::from_secs(start.poll_interval.max(1));
     let deadline = Instant::now() + Duration::from_secs(start.expires_in);
 
-    output::progress("⏳", "wait", "Waiting for authorization (Ctrl-C to abort)...");
+    output::progress(
+        "⏳",
+        "wait",
+        "Waiting for authorization (Ctrl-C to abort)...",
+    );
 
     let mut sigint = sigint_stream();
 
@@ -95,7 +104,7 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
 
         tokio::select! {
             _ = tokio::time::sleep(interval) => {}
-            _ = sigint.recv() => {
+            Some(_) = sigint.recv() => {
                 return Err(anyhow!("login aborted by user"));
             }
         }
@@ -110,10 +119,7 @@ pub async fn run(web_base: Option<String>) -> Result<()> {
             .with_context(|| format!("POST {}", poll_url))?;
 
         // 410 Gone is used for denied/expired with a JSON body; parse first.
-        let body: PollResponse = resp
-            .json()
-            .await
-            .context("parse cli-auth/poll response")?;
+        let body: PollResponse = resp.json().await.context("parse cli-auth/poll response")?;
 
         match body.status.as_str() {
             "pending" => continue,
@@ -144,38 +150,4 @@ pub async fn logout() -> Result<()> {
     config::clear_token()?;
     output::progress("✅", "ok", "Logged out");
     Ok(())
-}
-
-/// Cross-platform SIGINT receiver. Same shape as `cmd::run::sigint_stream`
-/// (kept duplicated for now; consider extracting if a third caller appears).
-fn sigint_stream() -> tokio::sync::mpsc::UnboundedReceiver<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-    #[cfg(unix)]
-    tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sig = match signal(SignalKind::interrupt()) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        while sig.recv().await.is_some() {
-            if tx.send(()).is_err() {
-                break;
-            }
-        }
-    });
-
-    #[cfg(not(unix))]
-    tokio::spawn(async move {
-        loop {
-            if tokio::signal::ctrl_c().await.is_err() {
-                break;
-            }
-            if tx.send(()).is_err() {
-                break;
-            }
-        }
-    });
-
-    rx
 }
