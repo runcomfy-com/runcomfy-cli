@@ -1,6 +1,6 @@
 {
   "name": "@runcomfy/cli",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "RunComfy CLI \u2014 run AI media models on RunComfy",
   "license": "MIT",
   "homepage": "https://docs.runcomfy.com/cli/introduction",
