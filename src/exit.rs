@@ -50,7 +50,22 @@ pub fn classify(e: &anyhow::Error) -> i32 {
             CliError::WaitTimeout { .. } => EX_TEMPFAIL,
             CliError::NeedsConfirmation(_) => EX_USAGE,
             CliError::Aborted => 1,
+            CliError::TrainingIncomplete { .. } => EX_TEMPFAIL,
         };
+    }
+
+    // A missing local input file anywhere in the cause chain (`--input-file`,
+    // `train submit --config`, `datasets upload` paths). Matched on the
+    // typed `io::ErrorKind` rather than the OS's message text, which differs
+    // between platforms ("No such file or directory" vs "The system cannot
+    // find the file specified").
+    if e.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io| io.kind() == std::io::ErrorKind::NotFound)
+            .unwrap_or(false)
+    }) {
+        return EX_NOINPUT;
     }
 
     // Walk the error chain looking for a string that hints at category.
@@ -65,8 +80,33 @@ pub fn classify(e: &anyhow::Error) -> i32 {
     if chain.contains("invalid input") || chain.contains("invalid json") {
         return EX_DATAERR;
     }
-    if chain.contains("no such file or directory") {
-        return EX_NOINPUT;
-    }
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_maps_to_noinput_by_error_kind() {
+        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let err = anyhow::Error::from(io).context("read config file ./nope.yaml");
+        assert_eq!(classify(&err), EX_NOINPUT);
+    }
+
+    #[test]
+    fn other_io_errors_stay_generic() {
+        let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
+        let err = anyhow::Error::from(io).context("read config file");
+        assert_eq!(classify(&err), 1);
+    }
+
+    #[test]
+    fn incomplete_training_is_retryable() {
+        let err = anyhow::Error::from(CliError::TrainingIncomplete {
+            job_id: "j".into(),
+            detail: "stopped at step 1/2".into(),
+        });
+        assert_eq!(classify(&err), EX_TEMPFAIL);
+    }
 }
