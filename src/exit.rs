@@ -5,6 +5,7 @@
 //! Scripts can branch on these:
 //!   - `64` (EX_USAGE)       — bad CLI args / unknown subcommand (clap also returns 2)
 //!   - `65` (EX_DATAERR)     — input data wrong (bad JSON, schema mismatch)
+//!   - `66` (EX_NOINPUT)     — a local input file / directory does not exist
 //!   - `69` (EX_UNAVAILABLE) — server side 5xx
 //!   - `75` (EX_TEMPFAIL)    — retryable: timeout, 408, 429
 //!   - `77` (EX_NOPERM)      — auth: 401 / 403, missing or expired token
@@ -14,7 +15,6 @@ use crate::error::CliError;
 
 pub const EX_USAGE: i32 = 64;
 pub const EX_DATAERR: i32 = 65;
-#[allow(dead_code)]
 pub const EX_NOINPUT: i32 = 66;
 pub const EX_UNAVAILABLE: i32 = 69;
 #[allow(dead_code)]
@@ -47,6 +47,9 @@ pub fn classify(e: &anyhow::Error) -> i32 {
             }
             CliError::UnknownSkill(_) => EX_USAGE,
             CliError::InvalidInput(_) => EX_DATAERR,
+            CliError::WaitTimeout { .. } => EX_TEMPFAIL,
+            CliError::NeedsConfirmation(_) => EX_USAGE,
+            CliError::Aborted => 1,
         };
     }
 
@@ -59,8 +62,11 @@ pub fn classify(e: &anyhow::Error) -> i32 {
     if chain.contains("timed out") || chain.contains("timeout") || chain.contains("429") {
         return EX_TEMPFAIL;
     }
-    if chain.contains("invalid input json") || chain.contains("invalid json") {
+    if chain.contains("invalid input") || chain.contains("invalid json") {
         return EX_DATAERR;
+    }
+    if chain.contains("no such file or directory") {
+        return EX_NOINPUT;
     }
     1
 }

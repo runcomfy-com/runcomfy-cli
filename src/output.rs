@@ -100,3 +100,63 @@ pub fn payload(value: &serde_json::Value) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Print an aligned, whitespace-separated table to stdout (pretty mode
+/// only — JSON mode callers print the raw payload instead). The last
+/// column is not padded, so lines carry no trailing whitespace.
+pub fn table(headers: &[&str], rows: &[Vec<String>]) {
+    let ncol = headers.len();
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate().take(ncol) {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
+    }
+    let render = |cells: &[&str]| -> String {
+        let mut line = String::new();
+        for (i, cell) in cells.iter().enumerate().take(ncol) {
+            if i > 0 {
+                line.push_str("  ");
+            }
+            if i == ncol - 1 {
+                line.push_str(cell);
+            } else {
+                line.push_str(cell);
+                for _ in cell.chars().count()..widths[i] {
+                    line.push(' ');
+                }
+            }
+        }
+        line.trim_end().to_string()
+    };
+    println!("{}", render(headers));
+    for row in rows {
+        let cells: Vec<&str> = row.iter().map(String::as_str).collect();
+        println!("{}", render(&cells));
+    }
+}
+
+/// Print aligned `key:  value` lines to stdout (pretty mode).
+pub fn kv(pairs: &[(&str, String)]) {
+    let width = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0) + 1;
+    for (k, v) in pairs {
+        let key = format!("{}:", k);
+        println!("{:<w$} {}", key, v, w = width);
+    }
+}
+
+/// Ask a yes/no question on stderr and read the answer from stdin.
+/// Returns `Ok(None)` when stdin is not a terminal (nobody can answer),
+/// so callers can distinguish "declined" from "non-interactive".
+pub fn confirm(prompt: &str) -> anyhow::Result<Option<bool>> {
+    use std::io::{BufRead, Write};
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    eprint!("{} [y/N] ", prompt);
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(Some(answer == "y" || answer == "yes"))
+}

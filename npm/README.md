@@ -1,6 +1,6 @@
 # @runcomfy/cli
 
-Command-line tool for [RunComfy](https://www.runcomfy.com) — run AI media models, manage requests, download outputs.
+Command-line tool for [RunComfy](https://www.runcomfy.com) — run hosted AI media models, manage Serverless API (ComfyUI) deployments, and train LoRAs.
 
 ## Install
 
@@ -20,9 +20,18 @@ To skip the download (when vendoring or using a pre-installed binary), set `RUNC
 
 ```bash
 runcomfy login
+runcomfy models list --search klein
 runcomfy run blackforestlabs/flux-2-klein/9b/text-to-image \
   --input '{"prompt": "ukiyo-e mountain"}'
+
+runcomfy deployments list          # Serverless API (ComfyUI) deployments
+runcomfy datasets list             # LoRA training datasets
+runcomfy train status <job_id>     # AI Toolkit training jobs
+runcomfy balance
 ```
+
+Run `runcomfy --help` for the full command list (`models`, `run`, `result`,
+`deployments`, `datasets`, `train`, ...).
 
 ## Docs
 

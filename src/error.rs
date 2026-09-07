@@ -28,7 +28,20 @@ pub enum CliError {
     #[allow(dead_code)]
     UnknownSkill(String),
 
-    /// User-supplied input JSON didn't parse / validate.
-    #[error("invalid input JSON: {0}")]
+    /// User-supplied input (JSON payload, config file, upload paths, flag
+    /// combination) didn't parse / validate.
+    #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// `--wait` / `--timeout` elapsed while the remote job kept running.
+    #[error("timed out after {secs}s waiting for {what}; it is still running remotely — {hint}")]
+    WaitTimeout { what: String, secs: u64, hint: String },
+
+    /// A destructive command was run non-interactively without `--yes`.
+    #[error("refusing to {0} without confirmation — re-run with --yes, or answer the prompt in a terminal")]
+    NeedsConfirmation(String),
+
+    /// The user answered "no" to a confirmation prompt.
+    #[error("aborted")]
+    Aborted,
 }

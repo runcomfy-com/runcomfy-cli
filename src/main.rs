@@ -7,9 +7,13 @@ mod api;
 mod cli;
 mod cmd;
 mod config;
+mod download;
 mod error;
 mod exit;
+mod input;
 mod output;
+mod poll;
+mod signal;
 
 #[tokio::main]
 async fn main() -> ExitCode {
