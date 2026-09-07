@@ -72,11 +72,16 @@ pub fn http() -> Result<Client> {
 /// overall deadline, only a connect timeout and a read-inactivity
 /// timeout, so a multi-hundred-MB file isn't cut off mid-stream.
 pub fn http_long() -> Result<Client> {
+    Ok(http_long_builder()?.build()?)
+}
+
+/// The [`http_long`] configuration before `build()`, so a caller can layer
+/// on its own policy — the downloader adds a redirect check.
+pub fn http_long_builder() -> Result<reqwest::ClientBuilder> {
     Ok(Client::builder()
         .user_agent(user_agent())
         .connect_timeout(Duration::from_secs(10))
-        .read_timeout(Duration::from_secs(120))
-        .build()?)
+        .read_timeout(Duration::from_secs(120)))
 }
 
 /// Read the saved bearer token, error out if missing.
@@ -108,6 +113,30 @@ pub async fn request(
     query: &[(&str, String)],
     body: Option<&Value>,
 ) -> Result<Value> {
+    request_inner(method, base, path, query, body, false).await
+}
+
+/// Same as [`request`], but a non-JSON 2xx body comes back as a string
+/// instead of an error. Only the ComfyUI instance proxy needs this: every
+/// other endpoint must return JSON, and quietly accepting text there would
+/// let a malformed response read as an empty list or a successful delete.
+pub async fn request_allow_text(
+    method: Method,
+    base: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value> {
+    request_inner(method, base, path, &[], body, true).await
+}
+
+async fn request_inner(
+    method: Method,
+    base: &str,
+    path: &str,
+    query: &[(&str, String)],
+    body: Option<&Value>,
+    allow_text: bool,
+) -> Result<Value> {
     let client = http()?;
     let token = require_token()?;
     let full = url(base, path);
@@ -126,12 +155,16 @@ pub async fn request(
         .send()
         .await
         .with_context(|| format!("{} ({})", label, full))?;
-    read_json_value(resp, &label).await
+    read_body(resp, &label, allow_text).await
 }
 
 /// Turn a response into JSON, or into a classified error. `label` names
 /// the call in messages, e.g. `GET /deployments/{id}` or `status`.
 pub async fn read_json_value(resp: Response, label: &str) -> Result<Value> {
+    read_body(resp, label, false).await
+}
+
+async fn read_body(resp: Response, label: &str, allow_text: bool) -> Result<Value> {
     let status = resp.status();
     let text = resp
         .text()
@@ -142,7 +175,16 @@ pub async fn read_json_value(resp: Response, label: &str) -> Result<Value> {
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
-        return Ok(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)));
+        return match serde_json::from_str::<Value>(&text) {
+            Ok(v) => Ok(v),
+            Err(_) if allow_text => Ok(Value::String(text)),
+            Err(e) => Err(anyhow!(
+                "{}: expected JSON, got {}: {}",
+                label,
+                e,
+                truncate_error_body(&text)
+            )),
+        };
     }
     Err(api_error(status, &text, label))
 }

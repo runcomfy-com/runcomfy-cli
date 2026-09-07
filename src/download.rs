@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use reqwest::{Client, Url};
+use reqwest::{redirect, Client, Url};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
@@ -78,7 +78,7 @@ pub async fn download_outputs(value: &Value, output_dir: &str) -> Result<Vec<Pat
 
     // Long-lived client: no overall request timeout, only connect / read
     // inactivity timeouts, so a multi-hundred-MB video isn't cut off.
-    let client = api::http_long()?;
+    let client = trusted_download_client()?;
     let mut written = Vec::new();
     for url in trusted {
         match download_file(&client, &url, &dir).await {
@@ -115,36 +115,23 @@ pub fn collect_urls(v: &Value, out: &mut Vec<String>) {
     }
 }
 
-/// File name for a downloaded asset: the URL's last path segment, reduced
-/// to a single safe filesystem component. Path separators, control
-/// characters and characters that are illegal on Windows are replaced, and
-/// a name that would be empty, `.` or `..` becomes `output` — so a crafted
-/// result URL can never make `Path::join` write outside `--output-dir`.
+/// File name for a downloaded asset: the URL's last path segment, kept to
+/// a single path component so a result URL such as `.../a/..\victim`
+/// cannot make `Path::join` write outside `--output-dir`.
 pub fn filename_from_url(url: &str) -> String {
-    let last_segment = Url::parse(url)
+    let segment = Url::parse(url)
         .ok()
         .and_then(|u| {
             u.path_segments()
                 .and_then(|mut segs| segs.rfind(|s| !s.is_empty()).map(str::to_string))
         })
         .unwrap_or_default();
-    sanitize_filename(&last_segment)
-}
-
-fn sanitize_filename(raw: &str) -> String {
-    let cleaned: String = raw
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('.');
-    if trimmed.is_empty() {
+    let cleaned = segment.replace(['/', '\\'], "_");
+    let cleaned = cleaned.trim().trim_matches('.');
+    if cleaned.is_empty() {
         "output".to_string()
     } else {
-        trimmed.to_string()
+        cleaned.to_string()
     }
 }
 
@@ -254,6 +241,42 @@ pub async fn download_file(client: &Client, url: &str, dir: &Path) -> Result<Pat
     Ok(path)
 }
 
+/// Download client that re-checks the host on every redirect hop. Without
+/// it a trusted RunComfy URL could redirect the CLI to an arbitrary or
+/// local-network host, since only the first URL is ever checked.
+pub fn trusted_download_client() -> Result<Client> {
+    let policy = redirect::Policy::custom(|attempt| {
+        match redirect_decision(attempt.url().as_str(), attempt.previous().len()) {
+            RedirectDecision::Follow => attempt.follow(),
+            RedirectDecision::Stop => attempt.stop(),
+            RedirectDecision::TooMany => attempt.error("too many redirects"),
+        }
+    });
+    api::http_long_builder()?
+        .redirect(policy)
+        .build()
+        .context("build download client")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RedirectDecision {
+    Follow,
+    Stop,
+    TooMany,
+}
+
+/// Whether to follow one redirect hop: only to a trusted host, and only
+/// while under the hop limit.
+fn redirect_decision(target: &str, hops: usize) -> RedirectDecision {
+    if hops >= 10 {
+        RedirectDecision::TooMany
+    } else if is_trusted_download_url(target) {
+        RedirectDecision::Follow
+    } else {
+        RedirectDecision::Stop
+    }
+}
+
 /// Trusted-host check for download URLs.
 ///
 /// Uses the same WHATWG parser reqwest uses, so the host checked here is
@@ -336,6 +359,26 @@ mod tests {
     }
 
     #[test]
+    fn redirects_leave_the_trusted_hosts_unfollowed() {
+        assert_eq!(
+            redirect_decision("https://files.runcomfy.net/a.png", 1),
+            RedirectDecision::Follow
+        );
+        assert_eq!(
+            redirect_decision("http://127.0.0.1/a.png", 1),
+            RedirectDecision::Stop
+        );
+        assert_eq!(
+            redirect_decision("https://evil.example.com/a.png", 1),
+            RedirectDecision::Stop
+        );
+        assert_eq!(
+            redirect_decision("https://files.runcomfy.net/a.png", 10),
+            RedirectDecision::TooMany
+        );
+    }
+
+    #[test]
     fn urls_are_collected_once_in_order() {
         let v = serde_json::json!({
             "images": ["https://a.runcomfy.net/1.png", "https://a.runcomfy.net/1.png"],
@@ -374,10 +417,7 @@ mod tests {
             filename_from_url("https://x.runcomfy.net/a/%2e%2e/"),
             "output"
         );
-        assert_eq!(sanitize_filename("con:fig?.txt"), "con_fig_.txt");
-        assert_eq!(sanitize_filename("a/b"), "a_b");
-        assert_eq!(sanitize_filename("..."), "output");
-        assert_eq!(sanitize_filename(""), "output");
+        assert_eq!(filename_from_url("https://x.runcomfy.net/a/..."), "output");
         assert!(!filename_from_url("https://x.runcomfy.net/a/..\\victim").contains('\\'));
     }
 }

@@ -497,14 +497,15 @@ pub async fn proxy(
     let body = input::json_arg(body.as_deref(), body_file.as_deref(), "body")?
         .unwrap_or_else(|| Value::Object(Default::default()));
     let route = path.trim_start_matches('/');
-    let v = api::request(
+    // The ComfyUI backend can answer with plain text, so this is the one
+    // call site that tolerates a non-JSON body.
+    let v = api::request_allow_text(
         Method::POST,
         &api::serverless_api_base(),
         &format!(
             "/deployments/{}/instances/{}/proxy/{}",
             deployment_id, instance_id, route
         ),
-        &[],
         Some(&body),
     )
     .await?;

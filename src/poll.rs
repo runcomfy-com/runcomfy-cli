@@ -46,7 +46,7 @@ pub async fn wait_terminal<T, D>(
     describe: D,
 ) -> Result<Value>
 where
-    T: Fn(&Value) -> bool,
+    T: Fn(&Value) -> Result<bool>,
     D: Fn(&Value) -> String,
 {
     let started = Instant::now();
@@ -79,7 +79,7 @@ where
             last_desc = Some(desc);
         }
 
-        if is_terminal(&payload) {
+        if is_terminal(&payload)? {
             return Ok(payload);
         }
 
@@ -165,12 +165,18 @@ pub fn status_of(v: &Value) -> String {
         .to_ascii_lowercase()
 }
 
-/// Terminal check for Model API / Serverless inference requests.
-pub fn inference_is_terminal(v: &Value) -> bool {
-    matches!(
-        status_of(v).as_str(),
-        "completed" | "succeeded" | "failed" | "cancelled" | "canceled"
-    )
+/// Is this inference status terminal? `Err` for a state we don't know:
+/// polling on it would never end, since inference waits have no deadline
+/// by default.
+pub fn inference_is_terminal(v: &Value) -> Result<bool> {
+    match status_of(v).as_str() {
+        "completed" | "succeeded" | "failed" | "cancelled" | "canceled" => Ok(true),
+        "in_queue" | "in_progress" => Ok(false),
+        other => Err(anyhow!(
+            "unexpected status `{}` from the API; stopping instead of polling forever",
+            other
+        )),
+    }
 }
 
 /// One-line description of an inference status payload, e.g.

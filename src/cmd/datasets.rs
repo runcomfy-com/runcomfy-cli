@@ -325,7 +325,7 @@ pub async fn upload(
                 what: format!("dataset {}", dataset_id),
                 detach_hint: format!("check with `runcomfy datasets status {}`", dataset_id),
             },
-            |v| matches!(poll::status_of(v).as_str(), "ready" | "failed"),
+            |v| Ok(matches!(poll::status_of(v).as_str(), "ready" | "failed")),
             describe_dataset,
         )
         .await?;

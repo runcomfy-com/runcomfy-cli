@@ -136,103 +136,52 @@ pub async fn submit(args: SubmitArgs) -> Result<()> {
     finish_training(&final_status, &result, &job_id)
 }
 
-/// What a `STOPPED` job actually is. The public API reports `STOPPED`
-/// both for a job that ran to its final step and for one the platform
-/// stopped early (spot preemption, server reclaimed), so completion has to
-/// be *proven* from the step progress and the result's `error`. Anything
-/// that can't be verified is treated as not finished, so automation never
-/// consumes a partial checkpoint on the strength of a bare `STOPPED`.
-#[derive(Debug, PartialEq, Eq)]
-enum StoppedOutcome {
-    /// Valid progress with `current_step >= total_steps` and no error.
-    Finished,
-    /// Progress shows the job stopped before its final step.
-    StoppedEarly { current: i64, total: i64 },
-    /// The result record carries an `error`.
-    ErrorInResult(String),
-    /// No usable progress (`progress` missing / not an object /
-    /// `total_steps` 0), so completion cannot be verified.
-    Unverified,
-}
-
-impl StoppedOutcome {
-    fn describe(&self) -> String {
-        match self {
-            StoppedOutcome::Finished => "finished".to_string(),
-            StoppedOutcome::StoppedEarly { current, total } => format!(
-                "training stopped at step {}/{} before completing (preempted or reclaimed by the platform)",
-                current, total
-            ),
-            StoppedOutcome::ErrorInResult(msg) => format!("the result carries an error: {}", msg),
-            StoppedOutcome::Unverified => {
-                "the API reported no step progress, so completion cannot be verified".to_string()
-            }
-        }
-    }
-}
-
-fn classify_stopped(status: &Value, result: &Value) -> StoppedOutcome {
+/// Why a `STOPPED` job should not be treated as finished, or `None` when
+/// it looks complete.
+///
+/// The API reports `STOPPED` both for a job that ran to its final step and
+/// for one the platform stopped early (spot preemption, server reclaimed),
+/// so `--wait` fails only on positive evidence of an early stop: step
+/// progress short of the total, or an error in the result. A job with no
+/// usable progress data is reported as unverified but still exits 0 —
+/// failing there would break every run whose config yields no step count.
+fn incomplete_reason(status: &Value, result: &Value) -> Option<String> {
     if let Some(err) = result.get("error").filter(|e| !e.is_null()) {
         let message = err
             .get("message")
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| err.to_string());
-        return StoppedOutcome::ErrorInResult(message);
+        return Some(format!("the result carries an error: {}", message));
     }
-    let Some(p) = status.get("progress").filter(|p| p.is_object()) else {
-        return StoppedOutcome::Unverified;
-    };
+    let p = status.get("progress").filter(|p| p.is_object())?;
     let current = p.get("current_step").and_then(Value::as_i64).unwrap_or(0);
     let total = p.get("total_steps").and_then(Value::as_i64).unwrap_or(0);
-    if total <= 0 {
-        return StoppedOutcome::Unverified;
-    }
-    if current >= total {
-        StoppedOutcome::Finished
-    } else {
-        StoppedOutcome::StoppedEarly { current, total }
-    }
+    (total > 0 && current < total).then(|| {
+        format!(
+            "training stopped at step {}/{} before completing (preempted or reclaimed by the platform)",
+            current, total
+        )
+    })
 }
 
-/// Print a finished job's result record. Only a `STOPPED` job that reached
-/// its final step with no error exits 0; an early stop exits 75 (resumable),
-/// FAILED / CANCELED exit 1.
+/// Print a finished job's result record. A `STOPPED` job exits 0 unless
+/// there is evidence it stopped early, in which case it exits 75 (the job
+/// is resumable); FAILED / CANCELED exit 1.
 fn finish_training(status: &Value, result: &Value, job_id: &str) -> Result<()> {
-    let st = poll::status_of(status);
-    match st.as_str() {
-        "stopped" => match classify_stopped(status, result) {
-            StoppedOutcome::Finished => {
-                output::progress(
-                    "✅",
-                    "ok",
-                    format!(
-                        "Training job {} finished (STOPPED at its final step)",
-                        job_id
-                    ),
-                );
+    match poll::status_of(status).as_str() {
+        "stopped" => match incomplete_reason(status, result) {
+            None => {
+                output::progress("✅", "ok", format!("Training job {} finished", job_id));
                 output::payload(result)
             }
-            outcome @ StoppedOutcome::StoppedEarly { .. } => {
+            Some(why) => {
                 output::payload(result)?;
                 Err(anyhow!(CliError::TrainingIncomplete {
                     job_id: job_id.to_string(),
                     detail: format!(
                         "{}; resume from the latest checkpoint with `runcomfy train resume {}`",
-                        outcome.describe(),
-                        job_id
-                    ),
-                }))
-            }
-            outcome => {
-                output::payload(result)?;
-                Err(anyhow!(CliError::TrainingIncomplete {
-                    job_id: job_id.to_string(),
-                    detail: format!(
-                        "{}; inspect `runcomfy train status {}` and `runcomfy train result {}` before using its artifacts",
-                        outcome.describe(),
-                        job_id,
-                        job_id
+                        why, job_id
                     ),
                 }))
             }
@@ -241,7 +190,6 @@ fn finish_training(status: &Value, result: &Value, job_id: &str) -> Result<()> {
             output::payload(result)?;
             let err = status
                 .get("errors")
-                .or_else(|| status.get("error"))
                 .or_else(|| result.get("error"))
                 .map(|e| serde_json::to_string(e).unwrap_or_default())
                 .unwrap_or_else(|| "(no detail)".into());
@@ -258,11 +206,15 @@ fn finish_training(status: &Value, result: &Value, job_id: &str) -> Result<()> {
     }
 }
 
-fn training_is_terminal(v: &Value) -> bool {
-    matches!(
-        poll::status_of(v).as_str(),
-        "stopped" | "failed" | "canceled" | "cancelled"
-    )
+fn training_is_terminal(v: &Value) -> Result<bool> {
+    match poll::status_of(v).as_str() {
+        "stopped" | "failed" | "canceled" | "cancelled" => Ok(true),
+        "in_queue" | "running" | "resuming" => Ok(false),
+        other => Err(anyhow!(
+            "unexpected training status `{}` from the API; stopping instead of polling forever",
+            other
+        )),
+    }
 }
 
 /// `RUNNING 16% (320/2000)` style one-liner.
@@ -325,17 +277,11 @@ pub async fn status(job_id: String) -> Result<()> {
         }
     }
     if poll::status_of(&v) == "stopped" {
-        match classify_stopped(&v, &Value::Null) {
-            StoppedOutcome::Finished => {}
-            outcome @ StoppedOutcome::StoppedEarly { .. } => pairs.push((
+        if let Some(why) = incomplete_reason(&v, &Value::Null) {
+            pairs.push((
                 "note",
-                format!(
-                    "{}; `runcomfy train resume {}` to continue",
-                    outcome.describe(),
-                    job_id
-                ),
-            )),
-            outcome => pairs.push(("note", outcome.describe())),
+                format!("{}; `runcomfy train resume {}` to continue", why, job_id),
+            ));
         }
     }
     output::kv(&pairs);
@@ -467,62 +413,33 @@ mod tests {
     use serde_json::json;
 
     fn status(cur: i64, total: i64) -> Value {
-        json!({"status": "STOPPED", "progress": {"current_step": cur, "total_steps": total, "percent": 0}})
+        json!({"status": "STOPPED", "progress": {"current_step": cur, "total_steps": total}})
     }
 
     #[test]
-    fn stopped_at_final_step_is_finished() {
-        let r = json!({"status": "STOPPED"});
-        assert_eq!(
-            classify_stopped(&status(2000, 2000), &r),
-            StoppedOutcome::Finished
-        );
-        assert_eq!(
-            classify_stopped(&status(2001, 2000), &r),
-            StoppedOutcome::Finished
-        );
+    fn reaching_the_final_step_is_complete() {
+        assert_eq!(incomplete_reason(&status(2000, 2000), &Value::Null), None);
+        assert_eq!(incomplete_reason(&status(2001, 2000), &Value::Null), None);
     }
 
     #[test]
-    fn stopped_early_is_incomplete() {
-        assert_eq!(
-            classify_stopped(&status(320, 2000), &json!({"status": "STOPPED"})),
-            StoppedOutcome::StoppedEarly {
-                current: 320,
-                total: 2000
-            }
-        );
+    fn stopping_short_of_the_total_is_incomplete() {
+        let why = incomplete_reason(&status(320, 2000), &Value::Null).unwrap();
+        assert!(why.contains("320/2000"), "{}", why);
     }
 
     #[test]
-    fn result_error_wins_even_at_final_step() {
-        let result = json!({"status": "STOPPED", "error": {"message": "Job failed: server was reclaimed.", "code": "TRAINING_ERROR"}});
-        assert_eq!(
-            classify_stopped(&status(2000, 2000), &result),
-            StoppedOutcome::ErrorInResult("Job failed: server was reclaimed.".into())
-        );
+    fn an_error_in_the_result_is_incomplete() {
+        let result = json!({"error": {"message": "Job failed: server was reclaimed."}});
+        let why = incomplete_reason(&status(2000, 2000), &result).unwrap();
+        assert!(why.contains("server was reclaimed"), "{}", why);
     }
 
     #[test]
-    fn missing_or_unusable_progress_is_not_finished() {
-        assert_eq!(
-            classify_stopped(&json!({"status": "STOPPED"}), &Value::Null),
-            StoppedOutcome::Unverified
-        );
-        assert_eq!(
-            classify_stopped(
-                &json!({"status": "STOPPED", "progress": "n/a"}),
-                &Value::Null
-            ),
-            StoppedOutcome::Unverified
-        );
-        assert_eq!(
-            classify_stopped(&status(5, 0), &Value::Null),
-            StoppedOutcome::Unverified
-        );
-        assert_eq!(
-            classify_stopped(&json!({"status": "STOPPED", "progress": {}}), &Value::Null),
-            StoppedOutcome::Unverified
-        );
+    fn absent_progress_does_not_fail_the_job() {
+        // No evidence either way: don't fail a run whose config yields no
+        // step count.
+        assert_eq!(incomplete_reason(&json!({}), &Value::Null), None);
+        assert_eq!(incomplete_reason(&status(5, 0), &Value::Null), None);
     }
 }
